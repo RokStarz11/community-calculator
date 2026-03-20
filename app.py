@@ -411,11 +411,12 @@ with tab1:
 # TAB 2 — Projections
 # ═══════════════════════════════════════════════════════
 with tab2:
-    st.markdown('<div class="section-title">Projected activity volumes (month 1)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Rewarded activity volumes (month 1)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="highlight-box">These figures count activity that falls within reward limits and gets paid out — not total activity submitted. Any reviews, posts, or logins beyond a user\'s earn cap are not counted here, as the current model assumes activity stays within those limits.</div>', unsafe_allow_html=True)
     col1, col2, col3 = st.columns(3)
-    kpi(col1, "Reviews / month",       f"{projected_reviews_m1:,.0f}", f"${earn_per_review} each")
-    kpi(col2, "Forum posts / month",   f"{projected_posts_m1:,.0f}",   f"${earn_per_post} each · {likes_to_qualify} likes to qualify")
-    kpi(col3, "Login rewards / month", f"{projected_logins_m1:,.0f}",  f"${earn_per_login} each · {logins_per_week}×/week to qualify")
+    kpi(col1, "Reviews rewarded",       f"{projected_reviews_m1:,.0f}", f"${earn_per_review} each · within earn cap")
+    kpi(col2, "Forum posts rewarded",   f"{projected_posts_m1:,.0f}",   f"${earn_per_post} each · {likes_to_qualify} likes to qualify")
+    kpi(col3, "Login rewards paid out", f"{projected_logins_m1:,.0f}",  f"${earn_per_login} each · {logins_per_week}×/week to qualify")
 
     st.markdown("---")
     st.markdown('<div class="section-title">Per-tier detail (month 1)</div>', unsafe_allow_html=True)
