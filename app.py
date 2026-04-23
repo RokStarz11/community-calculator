@@ -634,21 +634,41 @@ BREAKEVEN_MEMBERS_OPT  = AVG_PAYOUT_ACTIVE / (0.75 * LTV_PER_MONTH)
 
 
 def build_scenario(sub_multiplier_from_m3, conv_rate_m6, conv_rate_m12):
+    """
+    Each active member can only convert once.
+    We track an unconverted pool and draw from it each month to hit
+    the cumulative conversion targets (conv_rate_m6 by month 6,
+    conv_rate_m12 by month 12), interpolating linearly within each window.
+    New active members joining mid-simulation are added to the pool.
+    """
     rows = []
     cumulative_subs   = 0
+    unconverted_pool  = 0.0
+    total_converted   = 0.0
     depositor_cohorts = []
-
-    def monthly_conv_rate(m):
-        if m <= 6:
-            return conv_rate_m6 / 6
-        else:
-            return (conv_rate_m12 - conv_rate_m6) / 6
+    prev_active       = 0
 
     for m in range(1, 13):
         new_subs        = BASE_SUBS_PER_MONTH if m < 3 else round(BASE_SUBS_PER_MONTH * sub_multiplier_from_m3)
         cumulative_subs += new_subs
         active_members  = round(cumulative_subs * ACTIVE_RETENTION)
-        new_depositors  = active_members * monthly_conv_rate(m)
+
+        # New active members this month enter the unconverted pool
+        new_active       = active_members - prev_active
+        unconverted_pool += max(new_active, 0)
+        prev_active       = active_members
+
+        # Target cumulative conversion fraction by end of this month
+        if m <= 6:
+            target_cum_rate = conv_rate_m6 * (m / 6)
+        else:
+            target_cum_rate = conv_rate_m6 + (conv_rate_m12 - conv_rate_m6) * ((m - 6) / 6)
+
+        target_total = active_members * target_cum_rate
+        new_depositors   = max(0.0, min(target_total - total_converted, unconverted_pool))
+        unconverted_pool -= new_depositors
+        total_converted  += new_depositors
+
         depositor_cohorts.append(new_depositors)
 
         community_rev = sum(
@@ -665,6 +685,8 @@ def build_scenario(sub_multiplier_from_m3, conv_rate_m6, conv_rate_m12):
             "Total subscribers": round(cumulative_subs),
             "Active members":    active_members,
             "New depositors":    round(new_depositors, 1),
+            "Total converted":   round(total_converted, 1),
+            "Conv. rate (cum.)": f"{total_converted/active_members*100:.1f}%" if active_members > 0 else "—",
             "Community revenue": round(community_rev, 2),
             "Loyalty cost":      round(loyalty_cost, 2),
             "Net community":     round(net_community, 2),
@@ -852,7 +874,8 @@ with tab5:
             d[c] = d[c].apply(lambda x: f"${x:,.0f}")
         for c in ["New subscribers", "Total subscribers", "Active members"]:
             d[c] = d[c].apply(lambda x: f"{x:,}")
-        d["New depositors"] = d["New depositors"].apply(lambda x: f"{x:.1f}")
+        d["New depositors"]  = d["New depositors"].apply(lambda x: f"{x:.1f}")
+        d["Total converted"] = d["Total converted"].apply(lambda x: f"{x:.1f}")
         return d
 
     tab_pess, tab_opt = st.tabs(["  ▼ Pessimistic  ", "  ▲ Optimistic  "])
