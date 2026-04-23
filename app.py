@@ -605,121 +605,58 @@ with tab4:
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 
+
 # ═══════════════════════════════════════════════════════
 # TAB 5 — Scenarios
 # ═══════════════════════════════════════════════════════
 
-# ── Scenario parameters (hardcoded from our conversation) ────────────────────
-#
-# ACQUISITION FUNNEL (monthly new community subscribers)
-#   Main site:        10,000 visitors × 80% exposure × 10% click × 20% subscribe = 160
-#   Affiliate sites:  10,400 visitors × 80% exposure × 10% click × 15% subscribe = 125
-#   Base total:       ~285/month
-#   Optimistic boost: 2.5× from month 3 (forum/partner/word-of-mouth effect)
-#
-# ACTIVE MEMBER RETENTION: 10% of all subscribers remain active long-term
-#
-# CONVERSION TO DEPOSITOR (of active members):
-#   Pessimistic: 30% by month 6,  50% by month 12  → ~4.2%/month ramp
-#   Optimistic:  50% by month 6,  75% by month 12  → ~7.1%/month ramp
-#
-# DEPOSITOR LTV: $375 accruing over 6 months = $62.50/month per converted depositor
-#
-# SEO BASELINE REVENUE: $100,000/month (unaffected by community)
-#
-# LOYALTY COSTS: derived from simulation — avg earn per active user × active users
-#   Earn cap: $100/user/month, withdrawal min: $100
-#   Power (10%): intensity 1.0 → $100/mo
-#   Mid   (54%): intensity 0.5 → $50/mo   [60% of remaining 90%]
-#   Casual(36%): intensity 0.15→ $15/mo   [40% of remaining 90%]
-#   Weighted avg earn/active user = 0.10×100 + 0.54×50 + 0.36×15 = $42.40
-#
-# WITHDRAWAL MINIMUM NOTE:
-#   Power users ($100/mo earn) hit withdrawal threshold every month ✓
-#   Mid users   ($50/mo earn)  hit threshold every 2 months ✓
-#   Casual users($15/mo earn)  hit threshold after ~7 months — risk of disengagement
+# ── Fixed scenario constants ──────────────────────────────────────────────────
+LTV_PER_DEPOSITOR   = 375
+LTV_MONTHS          = 6
+LTV_PER_MONTH       = LTV_PER_DEPOSITOR / LTV_MONTHS   # $62.50
 
-SEO_REVENUE        = 100_000   # per month, constant
-LTV_PER_DEPOSITOR  = 375       # lifetime value
-LTV_MONTHS         = 6         # accrual period
-LTV_PER_MONTH      = LTV_PER_DEPOSITOR / LTV_MONTHS   # $62.50/month per depositor
+BASE_SUBS_PER_MONTH = 285
+ACTIVE_RETENTION    = 0.10
 
-BASE_SUBS_PER_MONTH = 285      # base new subscribers/month
-ACTIVE_RETENTION    = 0.10     # 10% of all-time subscribers become/stay active
+# Weighted avg loyalty payout per active user per month
+# Power 10% @ $100 × 100% payout rate = $10.00
+# Mid   54% @ $50  × 50%  payout rate = $13.50
+# Casual36% @ $15  × 14%  payout rate =  $0.76  (hits $100 threshold ~month 7)
+AVG_PAYOUT_ACTIVE = (0.10 * 100 * 1.00) + (0.54 * 50 * 0.50) + (0.36 * 15 * 0.14)
 
-# Weighted avg loyalty cost per active user per month
-EARN_POWER   = 100.0
-EARN_MID     = 50.0
-EARN_CASUAL  = 15.0
-PCT_POWER_SC = 0.10
-PCT_MID_SC   = 0.54
-PCT_CASUAL_SC= 0.36
-AVG_EARN_ACTIVE = PCT_POWER_SC * EARN_POWER + PCT_MID_SC * EARN_MID + PCT_CASUAL_SC * EARN_CASUAL
-
-# Withdrawal: power cash out monthly, mid every 2 months, casual ~month 7+
-# We model actual monthly payout = fraction of earned that becomes payable
-# Power: 100% pays out monthly; Mid: 50% pays out monthly (avg); Casual: ~14% (1/7)
-PAYOUT_RATE_POWER   = 1.00
-PAYOUT_RATE_MID     = 0.50
-PAYOUT_RATE_CASUAL  = 0.14
-
-AVG_PAYOUT_ACTIVE = (
-    PCT_POWER_SC  * EARN_POWER  * PAYOUT_RATE_POWER  +
-    PCT_MID_SC    * EARN_MID    * PAYOUT_RATE_MID    +
-    PCT_CASUAL_SC * EARN_CASUAL * PAYOUT_RATE_CASUAL
-)
+# Break-even insight: at what active member count does community self-fund?
+# Monthly community revenue per active member (steady state, all converted):
+#   pessimistic: 50% conversion × $62.50 LTV/mo = $31.25/active member
+#   optimistic:  75% conversion × $62.50 LTV/mo = $46.88/active member
+# Break-even: AVG_PAYOUT_ACTIVE / revenue_per_active_member
+BREAKEVEN_MEMBERS_PESS = AVG_PAYOUT_ACTIVE / (0.50 * LTV_PER_MONTH)
+BREAKEVEN_MEMBERS_OPT  = AVG_PAYOUT_ACTIVE / (0.75 * LTV_PER_MONTH)
 
 
-def build_scenario(label, sub_multiplier_from_m3, conv_rate_m6, conv_rate_m12):
-    """
-    Build a 12-month P&L for one scenario.
-    sub_multiplier_from_m3: multiplier on base subs from month 3 onward
-    conv_rate_m6:  cumulative % of active members converted by month 6
-    conv_rate_m12: cumulative % of active members converted by month 12
-    """
+def build_scenario(sub_multiplier_from_m3, conv_rate_m6, conv_rate_m12):
     rows = []
     cumulative_subs   = 0
-    active_members    = 0
-    # Track depositors that are still within their 6-month LTV accrual window
-    # depositor_cohorts: list of (month_converted, count) — we pay LTV/6 per month for 6mo
     depositor_cohorts = []
 
-    # Monthly conversion rate: interpolate linearly between 0 → m6 rate → m12 rate
-    def monthly_conv_rate(month):
-        if month <= 6:
-            # ramp from 0 to conv_rate_m6 over 6 months
-            return (conv_rate_m6 / 6)
+    def monthly_conv_rate(m):
+        if m <= 6:
+            return conv_rate_m6 / 6
         else:
-            # ramp from conv_rate_m6 to conv_rate_m12 over next 6 months
-            extra = (conv_rate_m12 - conv_rate_m6) / 6
-            return extra
+            return (conv_rate_m12 - conv_rate_m6) / 6
 
     for m in range(1, 13):
-        # New subscribers this month
-        if m < 3:
-            new_subs = BASE_SUBS_PER_MONTH
-        else:
-            new_subs = round(BASE_SUBS_PER_MONTH * sub_multiplier_from_m3)
-
+        new_subs        = BASE_SUBS_PER_MONTH if m < 3 else round(BASE_SUBS_PER_MONTH * sub_multiplier_from_m3)
         cumulative_subs += new_subs
-        active_members   = round(cumulative_subs * ACTIVE_RETENTION)
-
-        # New depositors this month = active members × monthly conversion rate
-        # (only unconverted active members convert — approximation: assume pool stays large)
-        new_depositors = active_members * monthly_conv_rate(m)
+        active_members  = round(cumulative_subs * ACTIVE_RETENTION)
+        new_depositors  = active_members * monthly_conv_rate(m)
         depositor_cohorts.append(new_depositors)
 
-        # Community revenue: sum LTV/6 for each cohort still within accrual window
-        community_rev = 0.0
-        for age, cohort_size in enumerate(reversed(depositor_cohorts)):
-            if age < LTV_MONTHS:
-                community_rev += cohort_size * LTV_PER_MONTH
-
-        # Loyalty costs (actual payouts this month)
-        loyalty_cost = active_members * AVG_PAYOUT_ACTIVE
-
-        # Total revenue and net
-        total_rev     = SEO_REVENUE + community_rev
+        community_rev = sum(
+            cohort * LTV_PER_MONTH
+            for age, cohort in enumerate(reversed(depositor_cohorts))
+            if age < LTV_MONTHS
+        )
+        loyalty_cost  = active_members * AVG_PAYOUT_ACTIVE
         net_community = community_rev - loyalty_cost
 
         rows.append({
@@ -727,23 +664,20 @@ def build_scenario(label, sub_multiplier_from_m3, conv_rate_m6, conv_rate_m12):
             "New subscribers":   round(new_subs),
             "Total subscribers": round(cumulative_subs),
             "Active members":    active_members,
-            "New depositors":    round(new_depositors),
+            "New depositors":    round(new_depositors, 1),
             "Community revenue": round(community_rev, 2),
             "Loyalty cost":      round(loyalty_cost, 2),
             "Net community":     round(net_community, 2),
-            "SEO revenue":       SEO_REVENUE,
-            "Total revenue":     round(total_rev, 2),
         })
 
     return pd.DataFrame(rows)
 
 
-pess_df = build_scenario("Pessimistic", sub_multiplier_from_m3=1.0,  conv_rate_m6=0.30, conv_rate_m12=0.50)
-opt_df  = build_scenario("Optimistic",  sub_multiplier_from_m3=2.5,  conv_rate_m6=0.50, conv_rate_m12=0.75)
+pess_df = build_scenario(sub_multiplier_from_m3=1.0, conv_rate_m6=0.30, conv_rate_m12=0.50)
+opt_df  = build_scenario(sub_multiplier_from_m3=2.5, conv_rate_m6=0.50, conv_rate_m12=0.75)
 
 
 def find_breakeven(df):
-    """Return first month where cumulative net community turns positive, else None."""
     cumulative = 0
     for _, row in df.iterrows():
         cumulative += row["Net community"]
@@ -753,73 +687,70 @@ def find_breakeven(df):
 
 
 with tab5:
+
+    # ── Assumptions ──────────────────────────────────────────────────────────
     st.markdown('<div class="section-title">Scenario assumptions</div>', unsafe_allow_html=True)
-    st.markdown("""
-    <div class="highlight-box">
-    <b>Fixed across both scenarios</b><br>
-    SEO baseline: $100,000/month · Active member retention: 10% of all subscribers ·
-    LTV per depositor: $375 over 6 months ($62.50/month) ·
-    Earn cap: $100/user/month · Weighted avg loyalty payout: $27.60/active user/month<br><br>
-    <b>⚠️ Withdrawal minimum note:</b> The $100 minimum means casual users (~36% of active members,
-    earning $15/month) take ~7 months to reach their first payout. This creates a disengagement risk
-    in months 3–6 before they see any cash. Consider lower-threshold bonus redemptions in a later stage.
-    </div>
-    """, unsafe_allow_html=True)
 
     col_p, col_o = st.columns(2)
     with col_p:
         st.markdown("""
-        <div style="background:#1a1320;border:1px solid #3d1f4e;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;">
-        <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.15em;color:#c084fc;margin-bottom:0.5rem">
-        ▼ PESSIMISTIC</div>
-        <div style="font-size:0.85rem;color:#9ca3af;line-height:1.7">
-        · ~285 new subscribers/month throughout<br>
-        · No viral/partner boost<br>
+        <div style="background:#1a1320;border:1px solid #3d1f4e;border-radius:8px;padding:1rem 1.2rem;">
+        <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.15em;color:#c084fc;margin-bottom:0.6rem">▼ PESSIMISTIC</div>
+        <div style="font-size:0.84rem;color:#9ca3af;line-height:1.8">
+        · ~285 new subscribers/month (no boost)<br>
         · 30% of active members convert by month 6<br>
         · 50% of active members convert by month 12
         </div></div>
         """, unsafe_allow_html=True)
     with col_o:
         st.markdown("""
-        <div style="background:#13201a;border:1px solid #1f4e30;border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;">
-        <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.15em;color:#7ee8a2;margin-bottom:0.5rem">
-        ▲ OPTIMISTIC</div>
-        <div style="font-size:0.85rem;color:#9ca3af;line-height:1.7">
-        · 285/month rising to ~715/month from month 3 (2.5× boost)<br>
-        · Forum/partner/word-of-mouth effect<br>
+        <div style="background:#13201a;border:1px solid #1f4e30;border-radius:8px;padding:1rem 1.2rem;">
+        <div style="font-family:'Space Mono',monospace;font-size:0.7rem;letter-spacing:0.15em;color:#7ee8a2;margin-bottom:0.6rem">▲ OPTIMISTIC</div>
+        <div style="font-size:0.84rem;color:#9ca3af;line-height:1.8">
+        · ~285/month rising to ~715/month from month 3 (2.5× boost)<br>
         · 50% of active members convert by month 6<br>
         · 75% of active members convert by month 12
         </div></div>
         """, unsafe_allow_html=True)
 
+    st.markdown(f"""
+    <div class="highlight-box" style="margin-top:1rem">
+    <b>Fixed across both scenarios</b> &nbsp;·&nbsp;
+    Active retention: 10% of subscribers &nbsp;·&nbsp;
+    LTV: $375 over 6 months ($62.50/mo per depositor) &nbsp;·&nbsp;
+    Avg loyalty payout: ${AVG_PAYOUT_ACTIVE:.2f}/active user/month<br><br>
+    <b>⚠️ Withdrawal minimum ($100):</b> Casual users earn ~$15/month and take ~7 months to reach
+    their first payout. This creates a disengagement risk in months 3–6. Consider lower-threshold
+    bonus redemptions in a later stage to address this.<br><br>
+    <b>📊 Break-even active member count:</b> At steady-state conversion rates, the community
+    becomes self-funding at roughly <b>{BREAKEVEN_MEMBERS_PESS:.0f} active members</b> (pessimistic)
+    or <b>{BREAKEVEN_MEMBERS_OPT:.0f} active members</b> (optimistic). Your year-1 projections
+    reach 200–1,800 active members — meaning break-even is a year 2+ story under current assumptions.
+    </div>
+    """, unsafe_allow_html=True)
+
     st.markdown("---")
 
-    # ── KPI comparison: months 7–12 window ──────────────────────────────────
-    st.markdown('<div class="section-title">Months 7–12 summary</div>', unsafe_allow_html=True)
+    # ── KPI summary: months 7–12 ─────────────────────────────────────────────
+    st.markdown('<div class="section-title">Months 7–12 community P&L summary</div>', unsafe_allow_html=True)
 
     def window_kpis(df):
         w = df[df["Month"] >= 7]
         return {
-            "active_m12":     int(df.iloc[-1]["Active members"]),
+            "active_m12":      int(df.iloc[-1]["Active members"]),
             "comm_rev_total":  w["Community revenue"].sum(),
             "loyalty_total":   w["Loyalty cost"].sum(),
             "net_comm_total":  w["Net community"].sum(),
-            "total_rev_avg":   w["Total revenue"].mean(),
             "depositors_total": w["New depositors"].sum(),
+            "net_monthly_m12": float(df.iloc[-1]["Net community"]),
         }
 
     pk = window_kpis(pess_df)
     ok = window_kpis(opt_df)
 
-    col1, col2, col3 = st.columns(3)
-
     def comparison_kpi(col, label, pval, oval, fmt="$"):
-        if fmt == "$":
-            ps = f"${pval:,.0f}"
-            os = f"${oval:,.0f}"
-        else:
-            ps = f"{pval:,.0f}"
-            os = f"{oval:,.0f}"
+        ps = f"${pval:,.0f}" if fmt == "$" else f"{pval:,.0f}"
+        os = f"${oval:,.0f}" if fmt == "$" else f"{oval:,.0f}"
         col.markdown(f"""
         <div class="metric-card">
             <div class="label">{label}</div>
@@ -835,14 +766,15 @@ with tab5:
             </div>
         </div>""", unsafe_allow_html=True)
 
-    comparison_kpi(col1, "Active members (mo. 12)", pk["active_m12"],     ok["active_m12"],     fmt="n")
+    col1, col2, col3 = st.columns(3)
+    comparison_kpi(col1, "Active members (mo. 12)",      pk["active_m12"],      ok["active_m12"],      fmt="n")
     comparison_kpi(col2, "Community revenue (mo. 7–12)", pk["comm_rev_total"],  ok["comm_rev_total"])
     comparison_kpi(col3, "Loyalty costs (mo. 7–12)",     pk["loyalty_total"],   ok["loyalty_total"])
 
     col4, col5, col6 = st.columns(3)
-    comparison_kpi(col4, "Net community (mo. 7–12)",  pk["net_comm_total"],  ok["net_comm_total"])
-    comparison_kpi(col5, "Avg total revenue/month",   pk["total_rev_avg"],   ok["total_rev_avg"])
-    comparison_kpi(col6, "New depositors (mo. 7–12)", pk["depositors_total"],ok["depositors_total"], fmt="n")
+    comparison_kpi(col4, "Net community (mo. 7–12)",     pk["net_comm_total"],  ok["net_comm_total"])
+    comparison_kpi(col5, "Net community (mo. 12 only)",  pk["net_monthly_m12"], ok["net_monthly_m12"])
+    comparison_kpi(col6, "New depositors (mo. 7–12)",    pk["depositors_total"],ok["depositors_total"], fmt="n")
 
     st.markdown("---")
 
@@ -850,23 +782,24 @@ with tab5:
     st.markdown('<div class="section-title">Community revenue vs. loyalty cost</div>', unsafe_allow_html=True)
     fig_sc1 = go.Figure()
     fig_sc1.add_trace(go.Scatter(x=pess_df["Month"], y=pess_df["Community revenue"],
-                                 name="Community rev (pessimistic)", line=dict(color="#c084fc", width=2, dash="dot")))
+                                 name="Community rev (pess)", line=dict(color="#c084fc", width=2, dash="dot")))
     fig_sc1.add_trace(go.Scatter(x=opt_df["Month"],  y=opt_df["Community revenue"],
-                                 name="Community rev (optimistic)",  line=dict(color="#7ee8a2", width=2.5)))
+                                 name="Community rev (opt)",  line=dict(color="#7ee8a2", width=2.5)))
     fig_sc1.add_trace(go.Scatter(x=pess_df["Month"], y=pess_df["Loyalty cost"],
-                                 name="Loyalty cost (pessimistic)",  line=dict(color="#f59e0b", width=2, dash="dot")))
+                                 name="Loyalty cost (pess)",  line=dict(color="#f59e0b", width=2, dash="dot")))
     fig_sc1.add_trace(go.Scatter(x=opt_df["Month"],  y=opt_df["Loyalty cost"],
-                                 name="Loyalty cost (optimistic)",   line=dict(color="#ef4444", width=2)))
-    fig_sc1.add_vrect(x0=6.5, x1=12.5, fillcolor="rgba(126,232,162,0.04)",
-                      line_width=0, annotation_text="months 7–12", annotation_position="top left",
+                                 name="Loyalty cost (opt)",   line=dict(color="#ef4444", width=2)))
+    fig_sc1.add_vrect(x0=6.5, x1=12.5, fillcolor="rgba(126,232,162,0.04)", line_width=0,
+                      annotation_text="months 7–12", annotation_position="top left",
                       annotation_font_color="#4b5563")
     fig_sc1.update_layout(**BASE_LAYOUT, height=320,
                           xaxis=dict(**AXIS, title="Month", dtick=1),
                           yaxis=dict(**AXIS, title="USD / month"))
     st.plotly_chart(fig_sc1, use_container_width=True)
 
-    # ── Chart 2: Net community P&L ───────────────────────────────────────────
+    # ── Chart 2 & 3 ──────────────────────────────────────────────────────────
     col_l, col_r = st.columns(2)
+
     with col_l:
         st.markdown('<div class="section-title">Net community P&L (cumulative)</div>', unsafe_allow_html=True)
         fig_sc2 = go.Figure()
@@ -888,7 +821,7 @@ with tab5:
         st.plotly_chart(fig_sc2, use_container_width=True)
 
     with col_r:
-        st.markdown('<div class="section-title">Active members & new depositors</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Active members & new depositors/month</div>', unsafe_allow_html=True)
         fig_sc3 = go.Figure()
         fig_sc3.add_trace(go.Scatter(x=pess_df["Month"], y=pess_df["Active members"],
                                      name="Active members (pess)", line=dict(color="#c084fc", width=2, dash="dot")))
@@ -896,45 +829,44 @@ with tab5:
                                      name="Active members (opt)",  line=dict(color="#7ee8a2", width=2.5)))
         fig_sc3.add_trace(go.Bar(x=pess_df["Month"], y=pess_df["New depositors"],
                                  name="New depositors (pess)", marker_color="#4a2d6e",
-                                 marker_line_width=0, opacity=0.7, yaxis="y2"))
+                                 marker_line_width=0, opacity=0.8, yaxis="y2"))
         fig_sc3.add_trace(go.Bar(x=opt_df["Month"],  y=opt_df["New depositors"],
                                  name="New depositors (opt)",  marker_color="#1a4e30",
-                                 marker_line_width=0, opacity=0.7, yaxis="y2"))
+                                 marker_line_width=0, opacity=0.8, yaxis="y2"))
         fig_sc3.update_layout(
             **BASE_LAYOUT, barmode="group", height=300,
             xaxis=dict(**AXIS, title="Month", dtick=1),
-            yaxis=dict( **AXIS, title="Active members"),
+            yaxis=dict(**AXIS,  title="Active members"),
             yaxis2=dict(overlaying="y", side="right", title="New depositors/month",
                         gridcolor="#1f2030", linecolor="#1f2030", showgrid=False),
         )
         st.plotly_chart(fig_sc3, use_container_width=True)
 
-    # ── Full P&L tables ──────────────────────────────────────────────────────
+    # ── Full P&L tables ───────────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown('<div class="section-title">Full 12-month P&L tables</div>', unsafe_allow_html=True)
-
-    tab_pess, tab_opt = st.tabs(["  ▼ Pessimistic  ", "  ▲ Optimistic  "])
+    st.markdown('<div class="section-title">Full 12-month community P&L</div>', unsafe_allow_html=True)
 
     def format_pl_table(df):
         d = df.copy()
-        for c in ["Community revenue", "Loyalty cost", "Net community", "SEO revenue", "Total revenue"]:
+        for c in ["Community revenue", "Loyalty cost", "Net community"]:
             d[c] = d[c].apply(lambda x: f"${x:,.0f}")
-        for c in ["New subscribers", "Total subscribers", "Active members", "New depositors"]:
+        for c in ["New subscribers", "Total subscribers", "Active members"]:
             d[c] = d[c].apply(lambda x: f"{x:,}")
+        d["New depositors"] = d["New depositors"].apply(lambda x: f"{x:.1f}")
         return d
+
+    tab_pess, tab_opt = st.tabs(["  ▼ Pessimistic  ", "  ▲ Optimistic  "])
 
     with tab_pess:
         be = find_breakeven(pess_df)
-        if be:
-            st.markdown(f'<div class="highlight-box">Community P&L turns cumulatively positive at <b>month {be}</b>.</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="highlight-box">⚠️ Community P&L does not break even within 12 months in this scenario.</div>', unsafe_allow_html=True)
+        msg = f"Community P&L turns cumulatively positive at month <b>{be}</b>." if be else \
+              "⚠️ Community P&L does not break even within 12 months. See break-even member count above."
+        st.markdown(f'<div class="highlight-box">{msg}</div>', unsafe_allow_html=True)
         st.dataframe(format_pl_table(pess_df), use_container_width=True, hide_index=True)
 
     with tab_opt:
         be = find_breakeven(opt_df)
-        if be:
-            st.markdown(f'<div class="highlight-box">Community P&L turns cumulatively positive at <b>month {be}</b>.</div>', unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="highlight-box">⚠️ Community P&L does not break even within 12 months in this scenario.</div>', unsafe_allow_html=True)
+        msg = f"Community P&L turns cumulatively positive at month <b>{be}</b>." if be else \
+              "⚠️ Community P&L does not break even within 12 months. See break-even member count above."
+        st.markdown(f'<div class="highlight-box">{msg}</div>', unsafe_allow_html=True)
         st.dataframe(format_pl_table(opt_df), use_container_width=True, hide_index=True)
